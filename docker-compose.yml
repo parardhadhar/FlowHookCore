@@ -1,0 +1,70 @@
+name: flowhook
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: flowhook
+      POSTGRES_PASSWORD: flowhook_local_demo
+      POSTGRES_DB: flowhook
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U flowhook -d flowhook]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  redis:
+    image: redis:7-alpine
+    ports: ["127.0.0.1:6379:6379"]
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports: ["127.0.0.1:8025:8025"]
+  api:
+    build: ./api
+    environment:
+      PORT: 3000
+      DATABASE_URL: postgres://flowhook:flowhook_local_demo@db:5432/flowhook
+      REDIS_URL: redis://redis:6379
+      STRIPE_WEBHOOK_SECRET: whsec_local_demo
+      GITHUB_WEBHOOK_SECRET: github_local_demo
+    ports: ["127.0.0.1:3000:3000"]
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  worker:
+    build:
+      context: ./api
+      dockerfile: Dockerfile.worker
+    environment:
+      DATABASE_URL: postgres://flowhook:flowhook_local_demo@db:5432/flowhook
+      REDIS_URL: redis://redis:6379
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+      SMTP_FROM: FlowHook <noreply@flowhook.local>
+    depends_on:
+      api: {condition: service_healthy}
+      redis: {condition: service_healthy}
+  dashboard:
+    build: ./dashboard
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:3000
+      API_INTERNAL_URL: http://api:3000
+    ports: ["127.0.0.1:3001:3001"]
+    depends_on:
+      api: {condition: service_healthy}
+volumes:
+  db_data:
+  redis_data:

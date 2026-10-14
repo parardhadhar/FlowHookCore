@@ -1,0 +1,136 @@
+FlowHook — Workflow Automation Engine
+Design Document v1.0
+1. Overview
+Problem: Build a mini workflow-automation engine (Zapier/n8n-style) that receives events from third-party services via webhooks, and reliably triggers downstream actions — with retries, idempotency, and observability.
+
+Goal: A resume-credible system demonstrating backend systems design (queuing, retries, idempotency), full-stack delivery (dashboard, auth, deployment), and integration engineering (webhook signature verification, third-party APIs) — the overlapping core of SWE, SDE, and FDE interviews.
+
+Non-goals (v1): Multi-tenant billing, a visual drag-and-drop workflow builder, arbitrary user-defined trigger/action plugins. Keep the trigger/action set small and hardcoded to two sources and two sinks — depth over breadth.
+
+2. Scope
+Triggers (sources)	Actions (sinks)
+Stripe webhook (payment_intent.succeeded)	Slack incoming webhook
+GitHub webhook (issues.opened)	Email via SMTP (Nodemailer)
+Stretch (v2): Slack OAuth ("Add to Slack") install flow instead of a static incoming webhook URL — this is the highest-value addition for FDE framing, since it's a real auth/integration flow, not just a POST.
+
+3. Architecture
+signed webhook POST
+
+verify signature
+store raw event
+enqueue job
+
+check idempotency key
+
+execute action
+
+log result
+
+read workflows/runs
+
+toggle workflow
+
+Stripe / GitHub
+
+Webhook Receiver
+
+Postgres
+
+Redis Queue - BullMQ
+
+Worker
+
+Slack / Email Adapter
+
+Next.js Dashboard
+
+Why this shape: the webhook receiver's only job is verify → persist → enqueue → 200 OK fast. Nothing blocking happens on the request path — Stripe/GitHub will retry (and duplicate) webhooks if you're slow to respond, which is exactly the failure mode this architecture is designed to survive.
+
+4. Data Model
+-- A user-configured automation
+CREATE TABLE workflows (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL,
+  trigger_type TEXT NOT NULL,      -- 'stripe.payment_succeeded' | 'github.issue_opened'
+  action_type TEXT NOT NULL,       -- 'slack.message' | 'email.send'
+  action_config JSONB NOT NULL,    -- e.g. {"webhook_url": "...", "template": "..."}
+  is_active BOOLEAN DEFAULT true,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- One execution attempt of a workflow, for one incoming event
+CREATE TABLE runs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workflow_id UUID REFERENCES workflows(id),
+  status TEXT NOT NULL,            -- 'queued' | 'running' | 'succeeded' | 'retrying' | 'failed' | 'dead_letter'
+  attempt_count INT DEFAULT 0,
+  started_at TIMESTAMPTZ,
+  finished_at TIMESTAMPTZ,
+  error TEXT
+);
+
+-- Step-level trace for debugging in the dashboard
+CREATE TABLE run_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  run_id UUID REFERENCES runs(id),
+  step TEXT NOT NULL,              -- 'received' | 'verified' | 'enqueued' | 'action_called' | 'action_failed'
+  payload JSONB,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Prevents double-processing the same external event
+CREATE TABLE idempotency_keys (
+  source TEXT NOT NULL,            -- 'stripe' | 'github'
+  external_event_id TEXT NOT NULL, -- Stripe event.id / GitHub delivery ID
+  run_id UUID REFERENCES runs(id),
+  created_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (source, external_event_id)
+);
+The idempotency_keys primary key is the whole trick: inserting a duplicate (source, external_event_id) fails the constraint, so the receiver can catch that error and simply acknowledge the webhook without re-enqueueing — this is the concrete, demonstrable answer to "how do you prevent a webhook firing an action twice."
+
+5. Webhook Receiver Design
+Read raw request body (needed before JSON parsing — Stripe/GitHub sign the raw bytes).
+Verify signature:
+Stripe: HMAC-SHA256 using Stripe-Signature header + webhook signing secret.
+GitHub: HMAC-SHA256 using X-Hub-Signature-256 header + webhook secret.
+Reject with 401 on signature mismatch (log the attempt — this is a real security control worth mentioning in interviews).
+Attempt to insert into idempotency_keys. On conflict → respond 200 immediately, do nothing else.
+On success → insert a runs row (status queued), enqueue a BullMQ job with {run_id}, respond 200.
+Target response time: under 200ms, since it does no external calls — only DB writes.
+
+6. Queue & Retry Design
+Queue: BullMQ on Redis, one queue (action-queue), concurrency of ~5 workers to start.
+Retry policy: exponential backoff, base 2s, cap at 5 attempts (2s → 4s → 8s → 16s → 32s).
+On final failure: move runs.status to dead_letter; surfaced in the dashboard with the last error, so a human can manually retry or investigate.
+Worker logic per job:
+Load the run and its workflow.
+Call the action adapter (Slack or Email) with a timeout (e.g. 10s).
+On success: runs.status = succeeded, log a run_logs row.
+On failure: increment attempt_count, log the error, let BullMQ's retry mechanism re-queue it (or mark dead_letter if attempts exhausted).
+7. Dashboard (Next.js)
+Workflows list: name, trigger → action, active/inactive toggle.
+Run history (per workflow): table of runs with status badges (succeeded/retrying/failed/dead_letter), timestamp, attempt count.
+Run detail view: the run_logs trace — raw payload received, each step, and the final error if any. This view is your demo screenshot for interviews.
+Auth: simple session-based login (even a single hardcoded admin user is fine for v1 — this isn't the part being evaluated).
+8. Observability & Testing
+Structured logging: pino or winston, one log line per pipeline stage (received, verified, enqueued, action_called, action_result), each tagged with run_id for tracing a single event through the whole system.
+Unit tests: signature verification (valid/invalid/replayed), idempotency constraint behavior.
+Integration test: fire a fake Stripe payload at the receiver, assert a runs row and a Slack call (mocked) both happen exactly once — then fire the same payload again and assert nothing fires a second time.
+Load test (k6 or Artillery): ramp to N events/sec against the receiver, confirm: (a) response time stays low since it only enqueues, (b) the queue drains without dropping jobs, (c) no duplicate actions fire even under burst + retry. This is where your resume gets a real throughput number.
+9. Deployment
+Local dev: docker-compose up — Postgres, Redis, API, worker, dashboard, all in one command.
+Prod: Railway, Render, or Fly.io (all support Postgres + Redis + a background worker process on free/cheap tiers). Two long-running processes: API+webhook receiver, and the worker — plus the Next.js dashboard as a third.
+CI: GitHub Actions — run unit + integration tests on every push, build Docker images.
+10. Milestones (maps to the 3-week plan)
+Week	Deliverable
+1	Receiver + signature verification + queue + one working end-to-end path (Stripe → Slack) + idempotency proven with a manual replay
+2	Retry/backoff proven with a forced failure, second trigger + action added, dashboard with run history, basic auth
+3	Load test with a real throughput number, Dockerized, CI, deployed, README with architecture diagram
+11. What This Proves (for your resume)
+Write the bullet from what you actually measure in Section 8's load test — don't pre-fill a number. The shape:
+
+Built a webhook-driven automation engine (Node, Postgres, Redis/BullMQ) processing Stripe and GitHub events with signature-verified ingestion, exponential-backoff retries, and idempotency keys preventing duplicate side-effects; sustained [X] events/sec under load with zero duplicate actions.
+
+For an FDE-flavored version, lead with the integration angle instead:
+
+Designed an integration layer translating third-party webhook payloads (Stripe, GitHub) into internal workflow actions, handling signature verification, retry semantics, and duplicate-delivery guarantees — the same failure modes production webhook consumers hit in the wild.
