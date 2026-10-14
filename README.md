@@ -6,6 +6,8 @@
 
 Receive signed events. Queue background actions. Inspect every execution.
 
+**Created by [Parardha Dhar](https://github.com/parardhadhar)**
+
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)
 ![Node.js](https://img.shields.io/badge/Node.js-22-339933?style=flat-square&logo=node.js&logoColor=white)
 ![Next.js](https://img.shields.io/badge/Next.js-16-000000?style=flat-square&logo=next.js)
