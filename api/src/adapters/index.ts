@@ -77,6 +77,7 @@ function extractVars(payload: Record<string, any>): Record<string, string> {
       author: issue.user?.login ?? '',
       repo: payload.repository?.full_name ?? '',
       number: String(issue.number ?? ''),
+      ai_summary: String(payload.ai_summary ?? ''),
     };
   }
 

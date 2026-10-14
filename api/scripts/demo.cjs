@@ -10,12 +10,12 @@ async function request(path, options) {
 }
 async function main() {
   const workflows = await request('/api/workflows');
-  let workflow = workflows.find(w => w.name === 'Demo: GitHub issue to email' && w.is_active);
+  let workflow = workflows.find(w => w.name === 'Demo: AI issue digest to email' && w.is_active);
   if (!workflow) workflow = await request('/api/workflows', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({name: 'Demo: GitHub issue to email', trigger_type: 'github.issue_opened',
+    body: JSON.stringify({name: 'Demo: AI issue digest to email', trigger_type: 'github.issue_opened',
       action_type: 'email.send', action_config: {to: 'team@example.com', subject: 'New issue: {{title}}',
-        template: 'Issue #{{number}}: {{title}}\nBy {{author}} in {{repo}}\n{{url}}'}})
+        ai_summary: true, template: '{{ai_summary}}\n\nIssue #{{number}}: {{title}}\nBy {{author}} in {{repo}}\n{{url}}'}})
   });
   const before = await request(`/api/workflows/${workflow.id}/runs`);
   const delivery = crypto.randomUUID();
@@ -34,6 +34,9 @@ async function main() {
     if (fresh[0].status === 'succeeded') {
       const logs = await request(`/api/workflows/runs/${fresh[0].id}/logs`);
       assert.ok(logs.some(l => l.step === 'action_succeeded'));
+      const summary = logs.find(l => l.step === 'ai_summary');
+      assert.ok(summary?.payload?.text);
+      console.log('Summary provider:', summary.payload.provider);
       console.log('PASS: signed webhook, one run for two deliveries, worker success, execution trace.');
       console.log('Dashboard: http://localhost:3001 | Captured email: http://localhost:8025');
       return;
@@ -44,3 +47,4 @@ async function main() {
   throw new Error('Timed out waiting for worker completion');
 }
 main().catch(error => {console.error(error.message); process.exitCode = 1;});
+

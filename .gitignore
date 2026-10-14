@@ -29,3 +29,5 @@ redis_data/
 *.db-*
 *.tsbuildinfo
 artifacts/
+tmp/
+output/

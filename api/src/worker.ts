@@ -3,6 +3,7 @@ import { Worker, Job } from 'bullmq';
 import { pool, query, queryOne } from './db';
 import { redisConnection } from './queue';
 import { sendSlackMessage, sendEmail } from './adapters';
+import { summarizeIssue } from './ai';
 import { JobPayload, Run, Workflow } from './types';
 
 const QUEUE_NAME = 'action-queue';
@@ -34,6 +35,19 @@ const worker = new Worker<JobPayload>(
       if (!workflow) throw new Error(`Workflow ${run.workflow_id} not found`);
 
       const payload = run.event_payload ?? {};
+
+      if (workflow.action_config.ai_summary === true && payload.issue) {
+        // Reuse a saved summary across action retries rather than calling the LLM again.
+        const cached = await queryOne<{ payload: any }>(
+          `SELECT payload FROM run_logs WHERE run_id = $1 AND step = 'ai_summary' ORDER BY created_at DESC LIMIT 1`, [run_id]
+        );
+        const summary = cached?.payload ?? await summarizeIssue(payload);
+        if (!cached) await client.query(
+          `INSERT INTO run_logs (run_id, step, payload) VALUES ($1, 'ai_summary', $2)`,
+          [run_id, JSON.stringify(summary)]
+        );
+        payload.ai_summary = summary.text;
+      }
 
       // Log action_called step
       await client.query(

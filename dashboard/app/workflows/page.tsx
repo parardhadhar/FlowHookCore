@@ -275,7 +275,7 @@ function CreateModal({ onClose, onCreate }: { onClose: () => void; onCreate: (d:
                     onClick={() => {
                       setAction(opt.value);
                       if (opt.value === 'email.send') {
-                        setCfg('{\n  "to": "ops@example.com",\n  "subject": "Payment {{amount}} Received",\n  "template": "A payment from {{customer}} was processed."\n}');
+                        setCfg('{\n  "to": "ops@example.com",\n  "ai_summary": true, "subject": "New event: {{title}}",\n  "template": "{{ai_summary}}"\n}');
                       } else {
                         setCfg('{\n  "webhook_url": "https://hooks.slack.com/services/XXX",\n  "template": "Payment of {{amount}} received!"\n}');
                       }
@@ -471,3 +471,4 @@ export default function WorkflowsPage() {
     </div>
   );
 }
+

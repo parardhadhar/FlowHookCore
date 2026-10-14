@@ -46,7 +46,7 @@ If an existing local API is using port 3000, stop it first with Ctrl+C. The firs
 | Captured demo emails | http://localhost:8025 |
 | API health | http://localhost:3000/health |
 
-The demo creates an email workflow, delivers a signed GitHub issue event **twice**, checks that only one run is created, waits for worker success, and verifies an execution log. Mailpit captures the real SMTP message locally; it does not send email to an external recipient. Run the command again to generate another execution.
+The demo creates an email workflow, delivers a signed GitHub issue event **twice**, including its optional AI digest, checks that only one run is created, waits for worker success, and verifies an execution log. Mailpit captures the real SMTP message locally; it does not send email to an external recipient. Run the command again to generate another execution.
 
 ```bash
 docker compose logs -f api worker
@@ -97,6 +97,29 @@ flowchart LR
 - Execution history and persisted step logs.
 - Docker Compose demo with PostgreSQL, Redis, API, worker, dashboard, and Mailpit.
 
+![AI summary in the execution trace](docs/assets/ai-execution-trace.png)
+
+## AI issue digests
+
+Enable `"ai_summary": true` in a GitHub issue workflow and include `{{ai_summary}}` in the email or Slack template. The worker calls **Groq**, using **Qwen 3.8 27B** by default, to produce a short engineering digest. The provider and summary appear in the persisted `ai_summary` execution step.
+
+```json
+{
+  "to": "team@example.com",
+  "subject": "New issue: {{title}}",
+  "ai_summary": true,
+  "template": "{{ai_summary}}\n\n{{url}}"
+}
+```
+
+For Docker, create a local root `.env` containing `GROQ_API_KEY=your_key`, then recreate the worker with `docker compose up -d worker`. Set `GROQ_MODEL` to override the model. Native development reads these values from `api/.env`. Keys are excluded from Git and Docker build contexts.
+
+Groq offers a [Free plan with rate limits](https://console.groq.com/docs/rate-limits); use that plan for a portfolio demo. No paid-plan upgrade is required by this project. Model availability and account quotas may change.
+
+Requests use bounded issue text, a token cap, and an eight-second timeout. Missing keys, rate limits, unavailable models, and malformed responses produce a deterministic issue excerpt labeled `fallback`, not fabricated AI output. Saved summaries are reused across action retries. Issue text is treated as untrusted data, and only the issue title/body is submitted to Groq. Model summaries remain untrusted text and cannot execute tools or change workflows.
+
+The demo now enables the AI option and verifies the saved summary step. With no key it checks the fallback; with a configured key it exercises the provider. Unit tests cover provider responses, rate limits, network errors, malformed output, and the no-key path.
+
 ## Engineering decisions
 
 **Separate ingestion from execution.** An external action can be slow or unavailable. Queuing lets the receiver acknowledge accepted events while workers handle actions and retries separately.
@@ -128,7 +151,7 @@ npm ci
 npm run build
 ```
 
-Signature tests cover valid requests, invalid signatures, tampered bodies, stale Stripe timestamps, and incorrect GitHub secrets. The Docker demo exercises workflow creation, raw-body signature verification, duplicate delivery, worker execution, and execution logs.
+Thirteen signature and AI adapter tests cover valid requests, invalid signatures, tampered bodies, stale Stripe timestamps, and incorrect GitHub secrets. The Docker demo exercises workflow creation, raw-body signature verification, duplicate delivery, worker execution, and execution logs.
 
 For native development, copy `api/.env.example` to `api/.env`, configure PostgreSQL/Redis/SMTP, and run `npm run dev` and `npm run dev:worker` in separate API terminals. Start the dashboard with `npm run dev -- -p 3001`.
 
